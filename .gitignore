@@ -1,0 +1,16 @@
+# 排除参考仓库、本地工具链、构建缓存和机器专属配置
+/.cache/
+/.gradle/
+/.kotlin/
+/.idea/
+**/build/
+/local.properties
+*.iml
+
+# 本地签名密钥与包含签名凭据的配置
+*.jks
+*.keystore
+*.p12
+*.pfx
+signing.properties
+keystore.properties

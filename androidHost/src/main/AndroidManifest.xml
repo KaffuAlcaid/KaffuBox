@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 声明宿主网络能力与不对外导出的隔离脚本服务，不提供界面或启动页面 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <application android:usesCleartextTraffic="true">
+        <service
+            android:name=".ScriptSandboxService"
+            android:exported="false"
+            android:isolatedProcess="true"
+            android:process=":ScriptSandbox" />
+    </application>
+</manifest>

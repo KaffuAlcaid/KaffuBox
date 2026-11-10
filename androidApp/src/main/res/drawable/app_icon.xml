@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 绘制 KaffuBox 启动图标 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="48dp" android:height="48dp" android:viewportWidth="48" android:viewportHeight="48">
+    <path android:fillColor="#316C82" android:pathData="M10,0H38Q48,0 48,10V38Q48,48 38,48H10Q0,48 0,38V10Q0,0 10,0" />
+    <path android:fillColor="#FFFFFF" android:pathData="M14,11H20V22L29,11H36L25,24L37,37H29L20,26V37H14Z" />
+</vector>
