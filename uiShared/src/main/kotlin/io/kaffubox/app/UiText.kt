@@ -5,6 +5,7 @@ import io.kaffubox.core.*
 import kotlinx.serialization.json.*
 
 object UiText {
+    fun toolTitle(id: String): String = if (id == "transfer.download") "文件下载" else id
     fun state(state: TaskState): String = when (state) {
         TaskState.Queued -> "等待中"
         TaskState.Running -> "处理中"
@@ -16,11 +17,34 @@ object UiText {
     fun permission(capability: Capability): String = when (capability) {
         Capability.FileRead -> "读取你选择的文件"
         Capability.FileWrite -> "创建处理结果"
+        Capability.FileManage -> "重命名已选择的原文件"
         Capability.Network -> "访问网络"
         Capability.DeviceRead -> "读取设备信息"
         Capability.NativeProcess -> "调用本地处理引擎"
     }
     fun error(code: String, details: JsonObject = JsonObject(emptyMap())): String = when (code) {
+        "regexTimeout" -> "正则匹配耗时过长，请缩短输入或调整表达式"
+        "renameUnsupported" -> "当前平台不支持重命名原文件，请选择创建改名副本"
+        "outputAlreadyExists" -> "输出文件已存在，可更换名称或调整同名文件策略"
+        "outputWouldReplaceInput" -> "输出位置与输入文件相同，请更换目录或名称"
+        "xmlStructureRequired" -> "输出 XML 需要包含 tag、attributes、content 的节点结构，可先从 XML 转换获得"
+        "tomlRootObjectRequired" -> "TOML 的根节点必须是对象"
+        "transferClosed" -> "传输会话已关闭或过期"
+        "downloadUrlInvalid" -> "请输入完整的 HTTP 或 HTTPS 地址，地址中不能包含用户名和密码"
+        "downloadHttpError" -> "服务器返回 HTTP " + (details["status"]?.jsonPrimitive?.contentOrNull ?: "错误")
+        "downloadRedirect" -> "下载地址发生跳转，请重新读取信息并确认新地址"
+        "downloadTooLarge" -> "文件超过本次下载大小上限，请调整上限后重试"
+        "downloadIncomplete" -> "连接结束时文件不完整，未保存未完成的内容"
+        "temporaryDirectoryUnavailable" -> "无法创建临时分享目录，请检查应用的存储空间"
+        "diskSpaceInsufficient" -> "临时目录剩余空间不足，请清理后再试"
+        "shareQuotaExceeded" -> "正在进行的分享占用了过多临时空间，请先停止部分分享"
+        "shareTooLarge" -> "分享内容超过 4 GiB，请分批分享"
+        "EOFException" -> "文件传输完成前连接已中断，未完成的文件已清理"
+        "SocketException" -> "网络连接已关闭或不可用"
+        "UnknownHostException" -> "无法解析主机地址"
+        "SocketTimeoutException" -> "网络连接或读取超时"
+        "ConnectException" -> "无法建立连接，请检查主机和端口"
+        "SSLHandshakeException", "SSLException" -> "TLS 握手或证书校验失败"
         "argumentRequired", "stringRequired", "integerRequired", "numberRequired", "finiteNumberRequired" -> "请补全参数，并检查数值格式"
         "argumentInvalid", "integerOutOfRange" -> "参数超出允许范围，请检查后重试"
         "fileReferenceUnknown" -> "文件引用已失效，请重新选择文件"

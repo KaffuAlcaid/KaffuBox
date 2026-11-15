@@ -19,8 +19,8 @@ import java.nio.file.Path
 import kotlin.math.*
 
 @Composable
-fun ScrollPage(content: @Composable ColumnScope.() -> Unit) {
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 28.dp), content = content)
+fun ScrollPage(scroll: androidx.compose.foundation.ScrollState = rememberScrollState(), content: @Composable ColumnScope.() -> Unit) {
+    Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(bottom = 28.dp), content = content)
 }
 
 @Composable

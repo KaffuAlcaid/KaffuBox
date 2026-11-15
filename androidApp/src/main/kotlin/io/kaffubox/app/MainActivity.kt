@@ -14,17 +14,29 @@ class MainActivity : ComponentActivity() {
     private val openFiles = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> controller.finishPick(uris) }
     private val openFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> controller.finishPick(listOfNotNull(uri)) }
     private val saveFile = registerForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri -> controller.finishSave(uri) }
-    private val notifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private var countdownPermissionFlow = false
+    private val notifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        controller.countdownReminder.refreshPermissions()
+        if (countdownPermissionFlow && granted) controller.countdownReminder.openPermissionSettings()
+        countdownPermissionFlow = false
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         controller.launchPicker = { types, multiple -> if (multiple) openFiles.launch(types) else openFile.launch(types) }
         controller.launchSave = { name -> saveFile.launch(name) }
         controller.requestNotifications = { if (android.os.Build.VERSION.SDK_INT >= 33) notifications.launch(android.Manifest.permission.POST_NOTIFICATIONS) }
+        controller.requestCountdownPermissions = {
+            if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                countdownPermissionFlow = true; notifications.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            } else controller.countdownReminder.openPermissionSettings()
+        }
         setContent { KaffuTheme(controller.preferences.theme) { MobileAppShell(controller) } }
         if (savedInstanceState == null) handleShared(intent)
     }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); handleShared(intent) }
+    override fun onStart() { super.onStart(); controller.appVisible = true; controller.countdownReminder.refreshPermissions(); if (controller.timer.running) controller.countdownReminder.schedule() }
+    override fun onStop() { controller.appVisible = false; super.onStop() }
     private fun handleShared(intent: Intent) {
         @Suppress("DEPRECATION")
         val uris = when (intent.action) {

@@ -29,7 +29,7 @@ fun PrepareMediaInfo(controller: AppController, tool: UiTool, state: ToolFormSta
         if (ref == null) { state.probing = false; return@LaunchedEffect }
         state.probing = true
         try {
-            val info = controller.execute("media.probe", jsonObject("file" to ref.id)).jsonObject
+            val info = controller.workspace.mediaCache[ref.id] ?: controller.execute("media.probe", jsonObject("file" to ref.id)).jsonObject.also { if (controller.workspace.mediaCache.size >= 24) controller.workspace.mediaCache.clear(); controller.workspace.mediaCache[ref.id] = it }
             state.mediaInfo = info
             if (tool.id == "media.extractSubtitles") {
                 val choices = subtitleChoices(info).filter { it.supported }

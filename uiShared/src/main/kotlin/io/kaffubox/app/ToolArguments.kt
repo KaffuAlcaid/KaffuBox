@@ -67,9 +67,23 @@ fun buildToolArguments(tool: UiTool, state: ToolFormState, batchKey: String? = n
             val input = batchFile ?: state.files.values.flatten().firstOrNull()
             val extension = when (tool.id) {
                 "media.videoToGif" -> "gif"; "media.edit" -> "mp4"; "media.extractFrame" -> "png"; "media.extractSubtitles" -> "srt"
-                "format.mediaConvert", "media.extractAudio", "image.transform", "image.stitch" -> state.values["format"]?.let { if (it == "jpeg") "jpg" else it } ?: "png"
+                "format.mediaConvert", "media.extractAudio", "image.transform", "image.stitch", "image.clearMetadata" -> state.values["format"]?.let { if (it == "jpeg") "jpg" else it } ?: "png"
                 else -> null
             }
             if (extension != null) put("name", (input?.name?.substringBeforeLast('.') ?: "Result") + ".$extension")
+        }
+        if (tool.fields.any { it.key == "duration" } && !state.values["__end"].isNullOrBlank()) {
+            val start = state.values["start"]?.toDoubleOrNull() ?: 0.0
+            val end = state.values.getValue("__end").toDouble()
+            requireArgument(start.isFinite() && end.isFinite() && end > start, "timeRange")
+            put("duration", end - start)
+        }
+        state.values["__nameTemplate"]?.takeIf(String::isNotBlank)?.let { template ->
+            if (tool.fields.any { it.key == "name" }) {
+                val input = batchFile ?: state.files.values.flatten().firstOrNull()
+                val extension = when (tool.id) { "media.videoToGif" -> "gif"; "media.edit" -> "mp4"; "media.extractFrame" -> "png"; "media.extractSubtitles" -> "srt"; else -> state.values["format"]?.let { if (it == "jpeg") "jpg" else it } ?: state.values["name"]?.substringAfterLast('.', "") ?: input?.name?.substringAfterLast('.', "").orEmpty() }
+                val index = state.files.values.flatten().indexOfFirst { it.id == input?.id }.coerceAtLeast(0) + 1
+                put("name", safeFileName(template.replace("{name}", input?.name?.substringBeforeLast('.') ?: "Result").replace("{index}", index.toString().padStart(3, '0')).replace("{ext}", extension)))
+            }
         }
     }

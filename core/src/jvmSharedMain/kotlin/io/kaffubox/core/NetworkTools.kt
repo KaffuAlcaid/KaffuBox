@@ -96,7 +96,7 @@ object NetworkTools {
         },
         defineTool("network.interfaces", Workbench.Network, capabilities = setOf(Capability.DeviceRead)) { _, _ ->
             val interfaces = NetworkInterface.getNetworkInterfaces()?.toList().orEmpty().map { item ->
-                jsonObject("name" to item.name, "up" to item.isUp, "loopback" to item.isLoopback, "addresses" to item.inetAddresses.toList().mapNotNull { it.hostAddress }, "mtu" to item.mtu)
+                jsonObject("name" to item.name, "displayName" to item.displayName, "up" to item.isUp, "loopback" to item.isLoopback, "addresses" to item.inetAddresses.toList().mapNotNull { it.hostAddress }, "mtu" to item.mtu)
             }
             jsonObject("interfaces" to interfaces)
         }

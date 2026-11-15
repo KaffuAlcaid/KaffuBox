@@ -29,13 +29,13 @@ class AndroidMediaTools(private val context: Context, private val files: Android
         defineTool("media.probe", Workbench.Media, mapOf("file" to "string"), listOf("file"), read) { args, _ -> probe(args.string("file")) },
         defineTool("media.extractFrame", Workbench.Media, mapOf("file" to "string", "start" to "number", "name" to "string"), listOf("file"), write) { args, ctx ->
             val frame = frame(args.string("file"), args.number("start", 0.0))
-            try { ctx.checkpoint(); val output = java.io.ByteArrayOutputStream(); frame.compress(Bitmap.CompressFormat.PNG, 100, output); val ref = files.writeBytes(args.string("name", "Frame.png"), output.toByteArray(), "image/png"); jsonObject("file" to CoreJson.encodeToJsonElement(ref)) }
+            try { ctx.checkpoint(); val output = java.io.ByteArrayOutputStream(); frame.compress(Bitmap.CompressFormat.PNG, 100, output); val ref = ctx.files.writeBytes(args.string("name", "Frame.png"), output.toByteArray(), "image/png"); jsonObject("file" to CoreJson.encodeToJsonElement(ref)) }
             finally { frame.recycle() }
         },
         defineTool("media.videoToGif", Workbench.Format, mapOf("file" to "string", "originalSize" to "boolean", "width" to "integer", "fps" to "integer", "start" to "number", "duration" to "number", "name" to "string"), listOf("file"), write) { args, ctx ->
             withContext(Dispatchers.IO) {
                 val reader = retriever(args.string("file"))
-                val ref = files.createOutput(args.string("name", "Video.gif"), "image/gif")
+                val ref = ctx.files.createOutput(args.string("name", "Video.gif"), "image/gif")
                 try {
                     val fullDuration = reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toDoubleOrNull()?.div(1000) ?: throw ToolFailure("mediaDurationUnavailable")
                     val start = args.number("start", 0.0); val duration = args.number("duration", fullDuration - start)
@@ -47,7 +47,7 @@ class AndroidMediaTools(private val context: Context, private val files: Android
                     val height = max(1, (first.height.toDouble() * width / first.width).roundToInt())
                     requireArgument(width in 16..4096 && width.toLong() * height <= 16_000_000, "pixelCount")
                     first.recycle()
-                    files.resolve(ref.id).openOutput!!.invoke().use { output ->
+                    ctx.files.resolve(ref.id).openOutput!!.invoke().use { output ->
                         val encoder = GifEncoder(output, width, height, 0)
                         val options = ImageOptions().setDelay((1000.0 / fps).roundToLong(), TimeUnit.MILLISECONDS)
                         val pixels = IntArray(width * height)
@@ -62,20 +62,20 @@ class AndroidMediaTools(private val context: Context, private val files: Android
                         }
                         encoder.finishEncoding()
                     }
-                    jsonObject("file" to CoreJson.encodeToJsonElement(files.resolve(ref.id).ref))
-                } catch (failure: Throwable) { files.discard(ref); throw failure }
+                    jsonObject("file" to CoreJson.encodeToJsonElement(ctx.files.resolve(ref.id).ref))
+                } catch (failure: Throwable) { ctx.files.discard(ref); throw failure }
                 finally { reader.release() }
             }
         },
         defineTool("media.extractAudio", Workbench.Media, mapOf("file" to "string", "name" to "string"), listOf("file"), write) { args, ctx ->
             withContext(Dispatchers.IO) {
-                val source = extractor(args.string("file")); val ref = files.createOutput(args.string("name", "Audio.m4a"), "audio/mp4")
+                val source = extractor(args.string("file")); val ref = ctx.files.createOutput(args.string("name", "Audio.m4a"), "audio/mp4")
                 try {
                     val track = (0 until source.trackCount).firstOrNull { source.getTrackFormat(it).text(MediaFormat.KEY_MIME)?.startsWith("audio/") == true } ?: throw ToolFailure("mediaNoAudio")
                     val format = source.getTrackFormat(track)
                     if (format.text(MediaFormat.KEY_MIME) !in setOf("audio/mp4a-latm", "audio/3gpp", "audio/amr-wb")) throw ToolFailure("audioCodecUnsupported")
                     source.selectTrack(track)
-                    val target = MediaMuxer(files.resolve(ref.id).localPath!!, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+                    val target = MediaMuxer(ctx.files.resolve(ref.id).localPath!!, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
                     try {
                         val targetTrack = target.addTrack(format); target.start()
                         val buffer = ByteBuffer.allocate((format.integer(MediaFormat.KEY_MAX_INPUT_SIZE) ?: 1024 * 1024).coerceIn(65536, 4 * 1024 * 1024))
@@ -83,8 +83,8 @@ class AndroidMediaTools(private val context: Context, private val files: Android
                         while (true) { ctx.checkpoint(source.sampleTime.coerceAtLeast(0), duration, "extracting"); buffer.clear(); val size = source.readSampleData(buffer, 0); if (size < 0) break; info.set(0, size, source.sampleTime, source.sampleFlags); target.writeSampleData(targetTrack, buffer, info); if (!source.advance()) break }
                         target.stop()
                     } finally { target.release() }
-                    jsonObject("file" to CoreJson.encodeToJsonElement(files.resolve(ref.id).ref))
-                } catch (failure: Throwable) { files.discard(ref); throw failure }
+                    jsonObject("file" to CoreJson.encodeToJsonElement(ctx.files.resolve(ref.id).ref))
+                } catch (failure: Throwable) { ctx.files.discard(ref); throw failure }
                 finally { source.release() }
             }
         },
@@ -108,7 +108,7 @@ class AndroidMediaTools(private val context: Context, private val files: Android
                     if (entries.isEmpty()) throw ToolFailure("mediaNoSubtitles")
                     fun stamp(ms: Long): String = "%02d:%02d:%02d,%03d".format(java.util.Locale.ROOT, ms / 3600000, ms / 60000 % 60, ms / 1000 % 60, ms % 1000)
                     val content = entries.mapIndexed { index, (start, text) -> (index + 1).toString() + "\n" + stamp(start) + " --> " + stamp(entries.getOrNull(index + 1)?.first ?: start + 3000) + "\n" + text + "\n" }.joinToString("\n")
-                    jsonObject("file" to CoreJson.encodeToJsonElement(files.writeBytes(args.string("name", "Subtitles.srt"), content.toByteArray(Charsets.UTF_8), "application/x-subrip")))
+                    jsonObject("file" to CoreJson.encodeToJsonElement(ctx.files.writeBytes(args.string("name", "Subtitles.srt"), content.toByteArray(Charsets.UTF_8), "application/x-subrip")))
                 } finally { source.release() }
             }
         }

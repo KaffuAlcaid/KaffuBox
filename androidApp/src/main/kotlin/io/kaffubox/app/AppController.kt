@@ -42,13 +42,25 @@ class AppController(val context: Context) {
     var installPreview by mutableStateOf<PluginInstallPreview?>(null)
     var pluginBusy by mutableStateOf(false)
     var fileToolPicker by mutableStateOf<List<FileRef>>(emptyList())
+    val workspace = WorkspaceState()
     val forms = mutableMapOf<String, ToolFormState>()
     val taskArguments = mutableMapOf<String, JsonObject>()
+    private val taskOutputs = mutableMapOf<String, OutputSession>()
     val calculator = CalculatorState(preferences)
     val matrix = MatrixState()
     val units = UnitState()
     val encoding = EncodingState()
-    val timer = CountdownState()
+    val timer = CountdownState(preferences.toolOptions["daily.countdown"].orEmpty(), android.os.SystemClock::elapsedRealtimeNanos)
+    var countdownJob: Job? = null
+    var appVisible = false
+    var countdownPermissionHint by mutableStateOf<String?>(null)
+    var requestCountdownPermissions: (() -> Unit)? = null
+    val countdownReminder = AndroidCountdownReminder(this)
+    fun startCountdown() { if (beginCountdown(this)) countdownReminder.schedule() }
+    fun pauseCountdown() { countdownJob?.cancel(); timer.pause(); countdownReminder.pause() }
+    fun resetCountdown() { countdownJob?.cancel(); timer.reset(); countdownReminder.pause() }
+    fun dismissCountdown() = countdownReminder.dismiss()
+    fun onCountdownFinished() = countdownReminder.complete()
     val supportsFileDrop = false
     val isTouchDevice = true
     val fileLocationActionLabel = "保存到…"
@@ -62,7 +74,7 @@ class AppController(val context: Context) {
     private var onPicked: ((List<Uri>) -> Unit)? = null
     private var pendingSave: FileRef? = null
 
-    init { scope.launch {
+    init { countdownReminder.restore(); scope.launch {
         var previous = emptyMap<String, TaskState>()
         host.tasks.snapshots.collectLatest { snapshots ->
             tasks = snapshots
@@ -70,7 +82,7 @@ class AppController(val context: Context) {
                 val manager = context.getSystemService(android.app.NotificationManager::class.java)
                 manager.createNotificationChannel(android.app.NotificationChannel("Completed", "任务完成", android.app.NotificationManager.IMPORTANCE_DEFAULT))
                 val launch = android.app.PendingIntent.getActivity(context, 0, Intent(context, MainActivity::class.java), android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT)
-                if (Build.VERSION.SDK_INT < 33 || context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED) manager.notify(completed.id.hashCode(), android.app.Notification.Builder(context, "Completed").setSmallIcon(R.drawable.app_icon).setContentTitle((findTool(completed.toolId)?.title ?: "处理任务") + "已完成").setContentText("点击查看结果").setContentIntent(launch).setAutoCancel(true).build())
+                if (Build.VERSION.SDK_INT < 33 || context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED) manager.notify(completed.id.hashCode(), android.app.Notification.Builder(context, "Completed").setSmallIcon(R.drawable.app_icon).setContentTitle((findTool(completed.toolId)?.title ?: UiText.toolTitle(completed.toolId)) + "已完成").setContentText("点击查看结果").setContentIntent(launch).setAutoCancel(true).build())
             }
             previous = snapshots.associate { it.id to it.state }
         }
@@ -78,8 +90,12 @@ class AppController(val context: Context) {
     val selectedTool: UiTool? get() = tools.firstOrNull { it.id == selectedToolId }
     fun findTool(id: String) = tools.firstOrNull { it.id == id }
     fun form(tool: UiTool) = forms.getOrPut(tool.id) { ToolFormState(tool).apply { if (preferences.rememberParameters) values.putAll(preferences.toolOptions[tool.id].orEmpty()) } }
-    fun navigate(destination: AppPage) { page = destination; search = ""; if (destination != AppPage.Tool) selectedToolId = null }
+    fun navigate(destination: AppPage) { workspace.capture(this); page = destination; search = ""; if (destination != AppPage.Tool) selectedToolId = null }
     fun openTool(tool: UiTool, input: List<FileRef> = emptyList()) {
+        workspace.rememberOrigin(this)
+        workspace.capture(this)
+        workspace.bind(this, tool, input)
+        updatePreferences(preferences.copy(recentTools = (listOf(tool.id) + preferences.recentTools).distinct().take(24)))
         page = AppPage.Tool; selectedToolId = tool.id; search = ""
         val field = tool.fields.firstOrNull { it.kind in setOf(FieldKind.File, FieldKind.Files) }
         if (input.isNotEmpty() && field != null) { val state = form(tool); state.files[field.key] = if (field.kind == FieldKind.Files || tool.batch) input else input.take(1); state.resetResult() }
@@ -87,37 +103,25 @@ class AppController(val context: Context) {
     fun favorite(id: String) { updatePreferences(preferences.copy(favorites = if (id in preferences.favorites) preferences.favorites - id else preferences.favorites + id)) }
     fun updatePreferences(value: AppPreferences) { preferences = value; try { preferenceStore.save(value) } catch (failure: Exception) { report(failure, "保存设置失败") } }
     fun rememberCalculator() { updatePreferences(preferences.copy(calculatorAngle = calculator.angleMode, calculatorDigits = calculator.displayDigits, calculatorFormat = calculator.displayFormat)) }
-    suspend fun execute(toolId: String, arguments: JsonObject): JsonElement = withContext(Dispatchers.Default) { ToolContext(files, Capability.entries.toSet(), platform, host.registry).invoke(toolId, arguments) }
+    suspend fun execute(toolId: String, arguments: JsonObject): JsonElement = withContext(Dispatchers.Default) {
+        ToolContext(files, Capability.entries.toSet(), platform, host.registry).invoke(toolId, arguments).also {
+            if (toolId in setOf("transfer.share", "transfer.receive")) context.startForegroundService(Intent(context, TaskForegroundService::class.java))
+        }
+    }
     suspend fun readImage(ref: FileRef): RasterImage = withContext(Dispatchers.Default) { ImageTools(AndroidImageCodec()).readImage(files.resolve(ref.id), ToolContext(files, Capability.entries.toSet(), platform, host.registry)) }
     fun arguments(tool: UiTool, state: ToolFormState, batchKey: String? = null, batchFile: FileRef? = null) = buildToolArguments(tool, state, batchKey, batchFile)
-    fun runForm(tool: UiTool, queued: Boolean = tool.queued) {
-        val state = form(tool)
-        try {
-            val first = tool.fields.firstOrNull { it.kind == FieldKind.File }
-            val batch = first?.let { state.files[it.key] }.orEmpty()
-            val inputs: List<FileRef?> = if (tool.batch && batch.size > 1) batch else listOf(null)
-            val requests = inputs.map { arguments(tool, state, first?.key, it) }
-            if (preferences.rememberParameters) {
-                val keys = tool.fields.filter { it.kind in setOf(FieldKind.Choice, FieldKind.Toggle, FieldKind.Integer, FieldKind.Number) }.map { it.key }.toSet()
-                updatePreferences(preferences.copy(toolOptions = preferences.toolOptions + (tool.id to state.values.filterKeys { it in keys })))
-            }
-            state.error = null; state.result = null
-            if (queued) {
-                requests.forEach { request -> val id = host.tasks.submit(tool.id, request, Capability.entries.toSet()); taskArguments[id] = request; state.selectedTask = id }
-                context.startForegroundService(Intent(context, TaskForegroundService::class.java))
-                message = if (requests.size == 1) "已加入处理队列" else "已加入 " + requests.size + " 个任务"
-            } else {
-                state.job?.cancel(); state.busy = true
-                state.job = scope.launch {
-                    try { state.result = execute(tool.id, requests.first()) }
-                    catch (_: CancellationException) { } catch (failure: Exception) { state.error = UiText.failure(failure); report(failure, tool.title) }
-                    finally { state.busy = false }
-                }
-            }
-        } catch (failure: Exception) { state.error = UiText.failure(failure); report(failure, tool.title) }
+    fun runForm(tool: UiTool, queued: Boolean = tool.queued) = runWorkspaceTool(this, tool, queued)
+    fun launchWork(action: suspend () -> Unit): Job = scope.launch { action() }
+    fun submitWork(toolId: String, arguments: JsonObject, output: OutputSession? = null): String {
+        val id = host.tasks.submit(toolId, arguments, Capability.entries.toSet(), output)
+        taskArguments[id] = arguments
+        if (output != null) taskOutputs[id] = output
+        context.startForegroundService(Intent(context, TaskForegroundService::class.java))
+        return id
     }
+
     fun selectFiles(tool: UiTool, field: ToolField) {
-        pick(if (tool.workbench == Workbench.Image) arrayOf("image/*") else arrayOf("*/*"), field.kind == FieldKind.Files || tool.batch) { importUris(it, tool, field) }
+        pick(if (tool.workbench == Workbench.Image || tool.id == "transfer.scanCode") arrayOf("image/*") else arrayOf("*/*"), field.kind == FieldKind.Files || tool.batch) { importUris(it, tool, field) }
     }
     private fun pick(types: Array<String>, multiple: Boolean, complete: (List<Uri>) -> Unit) { onPicked = complete; launchPicker?.invoke(types, multiple) }
     fun finishPick(uris: List<Uri>) { val callback = onPicked; onPicked = null; if (uris.isNotEmpty()) callback?.invoke(uris) }
@@ -170,7 +174,7 @@ class AppController(val context: Context) {
     fun openOutputDirectory() { message = "在任务结果中点击“保存到…”选择文件位置，也可直接打开文件" }
     fun retry(task: TaskSnapshot) {
         val arguments = taskArguments[task.id] ?: run { message = "请重新打开工具并选择文件"; return }
-        try { val id = host.tasks.submit(task.toolId, arguments, Capability.entries.toSet()); taskArguments[id] = arguments; context.startForegroundService(Intent(context, TaskForegroundService::class.java)) }
+        try { submitWork(task.toolId, arguments, taskOutputs[task.id]?.fresh()) }
         catch (failure: Exception) { report(failure, "重新开始失败") }
     }
     fun removeFinishedTasks() { tasks.filter { it.state in setOf(TaskState.Succeeded, TaskState.Failed, TaskState.Cancelled) }.forEach { task -> try { host.tasks.forget(task.id); taskArguments.remove(task.id) } catch (_: ToolFailure) { } } }
@@ -236,6 +240,7 @@ class AppController(val context: Context) {
     fun report(failure: Throwable, title: String) { if (failure is CancellationException) return; errorDetails = ErrorDetails(title, UiText.failure(failure), if (failure is ToolFailure) failure.code + "\n" + failure.details else failure.javaClass.simpleName + "\n" + failure.message.orEmpty()) }
     private fun mobileTools(): List<UiTool> = ToolCatalog.resolve(host.registry.list()).map { tool ->
         when {
+            tool.id == "file.rename" -> tool.copy(title = "批量改名副本", summary = "预览新名称后创建改名副本，保留授权 URI 对应的原文件", fields = tool.fields.map { if (it.key == "mode") it.copy(choices = listOf("copy" to "创建改名副本"), initial = "copy") else it })
             tool.id == "media.extractAudio" -> tool.copy(summary = "将兼容的原音轨直接保存为 M4A，不重新压缩", fields = tool.fields.filter { it.key in setOf("file", "format", "name") }.map { if (it.key == "format") it.copy(initial = "m4a", choices = listOf("m4a" to "M4A 原音轨"), hint = "支持直接保存 AAC、AMR 音轨") else it })
             tool.id.startsWith("image.") -> tool.copy(fields = tool.fields.map { field -> when (field.key) { "format" -> field.copy(choices = listOf("png" to "PNG", "jpeg" to "JPEG", "webp" to "WebP")); "quality" -> field.copy(label = "图片画质", visibleWhen = mapOf("format" to setOf("jpeg", "webp")), hint = "数值越高画质越好、文件通常越大，仅对 JPEG 和 WebP 生效"); else -> field } })
             else -> tool

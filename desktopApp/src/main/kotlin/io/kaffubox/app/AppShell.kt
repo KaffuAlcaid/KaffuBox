@@ -13,6 +13,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.*
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -24,11 +27,17 @@ import kotlinx.coroutines.delay
 @Composable
 fun AppShell(controller: AppController) {
     val snackbar = remember { SnackbarHostState() }
+    val searchFocus = remember { FocusRequester() }
     LaunchedEffect(controller.message) { controller.message?.let { value -> snackbar.showSnackbar(value, duration = SnackbarDuration.Short); if (controller.message == value) controller.message = null } }
-    CountdownTicker(controller)
     Surface(color = MaterialTheme.colorScheme.background) {
         FileDropArea({ controller.acceptFiles(it) }, Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxSize().onPreviewKeyEvent { event ->
+            if (event.type != KeyEventType.KeyDown || !event.isCtrlPressed) false else when (event.key) {
+                Key.F -> { controller.workspace.directoryFilter = "all"; controller.navigate(AppPage.Tools); controller.selectedCategory = null; controller.launchWork { delay(80); searchFocus.requestFocus() }; true }
+                Key.Enter -> { controller.selectedTool?.takeIf { it.id !in setOf("science.calculate", "science.unit", "science.matrix", "developer.encoding", "daily.countdown", "file.rename", "transfer.share", "transfer.receive", "transfer.scanCode", "transfer.stopShare") }?.let { controller.runForm(it) }; true }
+                else -> false
+            }
+        }) {
             Surface(Modifier.width(94.dp).fillMaxHeight(), color = MaterialTheme.colorScheme.surface) {
                 Column(Modifier.fillMaxHeight().padding(vertical = 20.dp, horizontal = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Surface(Modifier.size(48.dp), color = MaterialTheme.colorScheme.primary, shape = RoundedCornerShape(16.dp)) { Box(contentAlignment = Alignment.Center) { Text("K", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold, fontSize = 25.sp) } }
@@ -45,10 +54,10 @@ fun AppShell(controller: AppController) {
             Scaffold(modifier = Modifier.weight(1f), containerColor = MaterialTheme.colorScheme.background, snackbarHost = { SnackbarHost(snackbar) }) { inset ->
                 Column(Modifier.fillMaxSize().padding(inset).padding(horizontal = 28.dp, vertical = 24.dp)) {
                     if (controller.page in setOf(AppPage.Home, AppPage.Tools)) {
-                        OutlinedTextField(controller.search, { controller.search = it }, Modifier.fillMaxWidth().padding(bottom = 22.dp), singleLine = true, placeholder = { Text("搜索工具") }, leadingIcon = { Icon(Icons.Outlined.Search, null) }, trailingIcon = if (controller.search.isNotEmpty()) ({ IconButton(onClick = { controller.search = "" }) { Icon(Icons.Outlined.Close, "清空搜索") } }) else null, shape = RoundedCornerShape(14.dp))
+                        OutlinedTextField(controller.search, { controller.search = it }, Modifier.fillMaxWidth().focusRequester(searchFocus).padding(bottom = 22.dp), singleLine = true, placeholder = { Text("搜索工具") }, leadingIcon = { Icon(Icons.Outlined.Search, null) }, trailingIcon = if (controller.search.isNotEmpty()) ({ IconButton(onClick = { controller.search = "" }) { Icon(Icons.Outlined.Close, "清空搜索") } }) else null, shape = RoundedCornerShape(14.dp))
                     }
                     key(controller.page, controller.selectedToolId) {
-                        ScrollPage {
+                        if (controller.page == AppPage.Tool) FocusedToolPage(controller) else ScrollPage(scroll = navigationScrollState(controller)) {
                             when (controller.page) {
                                 AppPage.Home -> HomePage(controller)
                                 AppPage.Tools -> ToolsPage(controller)
@@ -64,6 +73,7 @@ fun AppShell(controller: AppController) {
         }
         }
         AppDialogs(controller)
+        CountdownReminder(controller)
     }
 }
 
@@ -78,68 +88,10 @@ private fun NavButton(label: String, icon: ImageVector, selected: Boolean, count
 }
 
 @Composable
-private fun HomePage(controller: AppController) {
-    if (controller.search.isNotBlank()) { PageHeader("搜索结果"); ToolGrid(controller, filteredTools(controller)); return }
-    PageHeader("KaffuBox") { Text("让小事更顺手", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-    val favorite = controller.preferences.favorites.mapNotNull(controller::findTool)
-    Text("常用工具", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 12.dp))
-    if (favorite.isEmpty()) Panel(Modifier.fillMaxWidth()) { Text("点击工具上的星标，将它加入常用工具") } else ToolGrid(controller, favorite)
-    Text("工作台", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 26.dp, bottom = 12.dp))
-    ResponsiveGrid(ToolCatalog.categories.entries.toList(), minWidth = 205) { (category, title) ->
-        Surface(onClick = { controller.selectedCategory = category; controller.navigate(AppPage.Tools) }, shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surface, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
-            Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Icon(workbenchIcon(category), null, Modifier.size(27.dp), tint = MaterialTheme.colorScheme.primary)
-                Column { Text(title, style = MaterialTheme.typography.titleSmall); Text(controller.tools.count { it.workbench == category }.toString() + " 个工具", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall) }
-            }
-        }
-    }
-}
-
-private fun filteredTools(controller: AppController): List<UiTool> {
-    val query = controller.search.trim()
-    return controller.tools.filter { tool -> (controller.selectedCategory == null || controller.page == AppPage.Home || tool.workbench == controller.selectedCategory) && (query.isEmpty() || listOf(tool.title, tool.summary, tool.id, ToolCatalog.categories[tool.workbench].orEmpty()).any { it.contains(query, ignoreCase = true) }) }
-}
+private fun HomePage(controller: AppController) = LauncherHome(controller)
 
 @Composable
-private fun ToolsPage(controller: AppController) {
-    PageHeader(controller.selectedCategory?.let { ToolCatalog.categories[it] } ?: "全部工具")
-    ChoiceField("分类", controller.selectedCategory?.name ?: "all", listOf("all" to "全部工具") + ToolCatalog.categories.map { it.key.name to it.value }, { controller.selectedCategory = if (it == "all") null else Workbench.valueOf(it) }, Modifier.width(260.dp).padding(bottom = 18.dp))
-    ToolGrid(controller, filteredTools(controller))
-}
-
-@Composable
-private fun ToolGrid(controller: AppController, tools: List<UiTool>) {
-    if (tools.isEmpty()) { Panel(Modifier.fillMaxWidth()) { Text("没有找到匹配的工具"); Text("试试名称、用途或其他关键词", color = MaterialTheme.colorScheme.onSurfaceVariant) }; return }
-    ResponsiveGrid(tools, minWidth = 250) { tool ->
-        Surface(onClick = { controller.openTool(tool) }, shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surface, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
-            Column(Modifier.fillMaxWidth().heightIn(min = 136.dp).padding(17.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(workbenchIcon(tool.workbench), null, Modifier.size(25.dp), tint = MaterialTheme.colorScheme.primary)
-                    Spacer(Modifier.weight(1f))
-                    IconButton(onClick = { controller.favorite(tool.id) }, modifier = Modifier.size(28.dp)) { Icon(if (tool.id in controller.preferences.favorites) Icons.Outlined.Star else Icons.Outlined.StarBorder, "收藏", Modifier.size(19.dp), tint = if (tool.id in controller.preferences.favorites) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline) }
-                }
-                Text(tool.title, style = MaterialTheme.typography.titleSmall)
-                Text(tool.summary, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
-    }
-}
-
-@Composable
-private fun <T> ResponsiveGrid(items: List<T>, minWidth: Int, content: @Composable (T) -> Unit) {
-    BoxWithConstraints(Modifier.fillMaxWidth()) {
-        val columns = (maxWidth.value / minWidth).toInt().coerceIn(1, 4)
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            items.chunked(columns).forEach { row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    row.forEach { item -> Box(Modifier.weight(1f)) { content(item) } }
-                    repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
-                }
-            }
-        }
-    }
-}
-
+private fun ToolsPage(controller: AppController) = ToolDirectory(controller)
 @Composable
 private fun AppDialogs(controller: AppController) {
     controller.installPreview?.let { PluginInstallDialog(controller, it) }
@@ -153,11 +105,11 @@ private fun AppDialogs(controller: AppController) {
             }
         }, confirmButton = { TextButton(onClick = { controller.errorDetails = null }) { Text("关闭") } }, dismissButton = { TextButton(onClick = { controller.copy(error.details) }) { Text("复制详情") } })
     }
-    if (controller.requestExit) AlertDialog(onDismissRequest = { controller.requestExit = false }, title = { Text("还有任务正在处理") }, text = { Text("退出会取消未完成的任务，已生成的完整结果会保留") }, confirmButton = { Button(onClick = controller::cancelAndExit) { Text("取消任务并退出") } }, dismissButton = { TextButton(onClick = { controller.requestExit = false }) { Text("继续处理") } })
+    if (controller.requestExit) AlertDialog(onDismissRequest = { controller.requestExit = false }, title = { Text("还有任务或倒计时正在进行") }, text = { Text("退出会取消未完成的任务和倒计时，已生成的完整结果会保留") }, confirmButton = { Button(onClick = controller::cancelAndExit) { Text("取消任务并退出") } }, dismissButton = { TextButton(onClick = { controller.requestExit = false }) { Text("继续处理") } })
     if (controller.fileToolPicker.isNotEmpty()) AlertDialog(onDismissRequest = { controller.fileToolPicker = emptyList() }, title = { Text("选择处理工具") }, text = {
         Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
             Text("已添加 " + controller.fileToolPicker.size + " 个文件", Modifier.padding(bottom = 8.dp))
-            controller.tools.filter { it.fields.any { field -> field.kind in setOf(FieldKind.File, FieldKind.Files) } }.forEach { tool ->
+            compatibleFileTools(controller.tools, controller.fileToolPicker).forEach { tool ->
                 TextButton(onClick = { controller.openTool(tool, controller.fileToolPicker); controller.fileToolPicker = emptyList() }, modifier = Modifier.fillMaxWidth()) { Text(tool.title, Modifier.weight(1f)); Icon(Icons.Outlined.ChevronRight, null) }
             }
         }

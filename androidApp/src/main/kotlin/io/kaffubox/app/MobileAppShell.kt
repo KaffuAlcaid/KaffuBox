@@ -20,8 +20,7 @@ import io.kaffubox.core.*
 fun MobileAppShell(controller: AppController) {
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(controller.message) { controller.message?.let { value -> snackbar.showSnackbar(value); if (controller.message == value) controller.message = null } }
-    CountdownTicker(controller)
-    BackHandler(controller.page != AppPage.Home) { controller.navigate(if (controller.page == AppPage.Tool) AppPage.Tools else AppPage.Home) }
+    BackHandler(controller.page != AppPage.Home) { if (controller.page == AppPage.Tool) controller.returnFromTool() else controller.navigate(AppPage.Home) }
     Scaffold(containerColor = MaterialTheme.colorScheme.background, snackbarHost = { SnackbarHost(snackbar) }, bottomBar = {
         if (controller.page != AppPage.Tool) NavigationBar {
             val destinations = listOf(Triple(AppPage.Home, "首页", Icons.Outlined.Home), Triple(AppPage.Tools, "工具", Icons.Outlined.GridView), Triple(AppPage.Tasks, "任务", Icons.Outlined.Checklist), Triple(AppPage.Plugins, "插件", Icons.Outlined.Extension), Triple(AppPage.Settings, "设置", Icons.Outlined.Settings))
@@ -31,7 +30,7 @@ fun MobileAppShell(controller: AppController) {
         Column(Modifier.fillMaxSize().padding(inset).imePadding().padding(horizontal = 14.dp, vertical = 12.dp)) {
             if (controller.page in setOf(AppPage.Home, AppPage.Tools)) OutlinedTextField(controller.search, { controller.search = it }, Modifier.fillMaxWidth().padding(bottom = 14.dp), singleLine = true, placeholder = { Text("搜索工具") }, leadingIcon = { Icon(Icons.Outlined.Search, null) }, trailingIcon = { if (controller.search.isNotBlank()) IconButton(onClick = { controller.search = "" }) { Icon(Icons.Outlined.Close, "清空搜索") } })
             key(controller.page, controller.selectedToolId) {
-                ScrollPage {
+                if (controller.page == AppPage.Tool) FocusedToolPage(controller) else ScrollPage(scroll = navigationScrollState(controller)) {
                     when (controller.page) {
                         AppPage.Home -> MobileHome(controller)
                         AppPage.Tools -> MobileTools(controller)
@@ -45,65 +44,14 @@ fun MobileAppShell(controller: AppController) {
         }
     }
     MobileDialogs(controller)
-}
-
-private fun matchingTools(controller: AppController): List<UiTool> = controller.tools.filter { tool ->
-    (controller.page == AppPage.Home || controller.selectedCategory == null || tool.workbench == controller.selectedCategory) &&
-        (controller.search.isBlank() || listOf(tool.title, tool.summary, tool.id).any { it.contains(controller.search.trim(), ignoreCase = true) })
+    CountdownReminder(controller)
 }
 
 @Composable
-private fun MobileHome(controller: AppController) {
-    PageHeader(if (controller.search.isBlank()) "KaffuBox" else "搜索结果")
-    if (controller.search.isNotBlank()) { MobileToolGrid(controller, matchingTools(controller)); return }
-    Text("常用工具", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 10.dp))
-    MobileToolGrid(controller, controller.preferences.favorites.mapNotNull(controller::findTool))
-    Text("工作台", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 20.dp, bottom = 10.dp))
-    ToolCatalog.categories.entries.toList().chunked(2).forEach { row ->
-        Row(Modifier.fillMaxWidth().padding(bottom = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            row.forEach { (category, title) ->
-                Surface(onClick = { controller.selectedCategory = category; controller.navigate(AppPage.Tools) }, modifier = Modifier.weight(1f), shape = MaterialTheme.shapes.medium) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                        Icon(workbenchIcon(category), null, tint = MaterialTheme.colorScheme.primary)
-                        Text(title, style = MaterialTheme.typography.titleSmall)
-                        Text(controller.tools.count { it.workbench == category }.toString() + " 个工具", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
-        }
-    }
-}
+private fun MobileHome(controller: AppController) = LauncherHome(controller)
 
 @Composable
-private fun MobileTools(controller: AppController) {
-    PageHeader("工具")
-    ChoiceField("分类", controller.selectedCategory?.name ?: "all", listOf("all" to "全部工具") + ToolCatalog.categories.map { it.key.name to it.value }, { controller.selectedCategory = if (it == "all") null else Workbench.valueOf(it) }, Modifier.fillMaxWidth().padding(bottom = 14.dp))
-    MobileToolGrid(controller, matchingTools(controller))
-}
-
-@Composable
-private fun MobileToolGrid(controller: AppController, tools: List<UiTool>) {
-    if (tools.isEmpty()) { Panel(Modifier.fillMaxWidth()) { Text("没有找到工具"); Text("可以换个关键词，或给常用工具加上星标", color = MaterialTheme.colorScheme.onSurfaceVariant) }; return }
-    tools.chunked(2).forEach { row ->
-        Row(Modifier.fillMaxWidth().padding(bottom = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            row.forEach { tool ->
-                Surface(onClick = { controller.openTool(tool) }, modifier = Modifier.weight(1f), shape = MaterialTheme.shapes.medium) {
-                    Column(Modifier.padding(12.dp).heightIn(min = 118.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(workbenchIcon(tool.workbench), null, tint = MaterialTheme.colorScheme.primary)
-                            Spacer(Modifier.weight(1f))
-                            IconButton(onClick = { controller.favorite(tool.id) }, modifier = Modifier.size(30.dp)) { Icon(if (tool.id in controller.preferences.favorites) Icons.Outlined.Star else Icons.Outlined.StarBorder, "收藏", Modifier.size(20.dp)) }
-                        }
-                        Text(tool.title, style = MaterialTheme.typography.titleSmall)
-                        Text(tool.summary, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
-            if (row.size == 1) Spacer(Modifier.weight(1f))
-        }
-    }
-}
-
+private fun MobileTools(controller: AppController) = ToolDirectory(controller)
 @Composable
 private fun MobileSettings(controller: AppController) {
     var unsigned by remember { mutableStateOf(false) }
@@ -139,7 +87,7 @@ private fun MobileDialogs(controller: AppController) {
     if (controller.fileToolPicker.isNotEmpty()) AlertDialog(onDismissRequest = { controller.fileToolPicker = emptyList() }, title = { Text("选择处理工具") }, text = {
         Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
             Text("已导入 " + controller.fileToolPicker.size + " 个文件")
-            controller.tools.filter { it.fields.any { field -> field.kind in setOf(FieldKind.File, FieldKind.Files) } }.forEach { tool -> TextButton(onClick = { controller.openTool(tool, controller.fileToolPicker); controller.fileToolPicker = emptyList() }, modifier = Modifier.fillMaxWidth()) { Text(tool.title, Modifier.weight(1f)); Icon(Icons.Outlined.ChevronRight, null) } }
+            compatibleFileTools(controller.tools, controller.fileToolPicker).forEach { tool -> TextButton(onClick = { controller.openTool(tool, controller.fileToolPicker); controller.fileToolPicker = emptyList() }, modifier = Modifier.fillMaxWidth()) { Text(tool.title, Modifier.weight(1f)); Icon(Icons.Outlined.ChevronRight, null) } }
         }
     }, confirmButton = { TextButton(onClick = { controller.fileToolPicker = emptyList() }) { Text("取消") } })
 }

@@ -49,13 +49,30 @@ class AppController(val dataRoot: Path, arguments: Map<String, String>) : AutoCl
     var visible by mutableStateOf(true)
     var window: Window? = null
     var notify: ((String) -> Unit)? = null
+    val workspace = WorkspaceState()
     val forms = mutableMapOf<String, ToolFormState>()
     val taskArguments = mutableMapOf<String, JsonObject>()
+    private val taskOutputs = mutableMapOf<String, OutputSession>()
     val calculator = CalculatorState(preferences)
     val matrix = MatrixState()
     val units = UnitState()
     val encoding = EncodingState()
-    val timer = CountdownState()
+    val timer = CountdownState(preferences.toolOptions["daily.countdown"].orEmpty())
+    var countdownJob: Job? = null
+    val countdownPermissionHint: String? = null
+    val requestCountdownPermissions: (() -> Unit)? = null
+    fun startCountdown() { beginCountdown(this) }
+    fun pauseCountdown() { countdownJob?.cancel(); timer.pause() }
+    fun resetCountdown() { countdownJob?.cancel(); timer.reset() }
+    fun dismissCountdown() { timer.alertVisible = false }
+    fun onCountdownFinished() {
+        visible = true
+        window?.let { target ->
+            if (target is Frame) target.extendedState = target.extendedState and Frame.ICONIFIED.inv()
+            target.isVisible = true; target.toFront(); target.requestFocus()
+        }
+        if (!java.awt.GraphicsEnvironment.isHeadless()) { notify?.invoke("倒计时结束"); playTimerSound() }
+    }
     var onExit: (() -> Unit)? = null
 
     init {
@@ -63,7 +80,7 @@ class AppController(val dataRoot: Path, arguments: Map<String, String>) : AutoCl
             var previous = emptyMap<String, TaskState>()
             host.tasks.snapshots.collectLatest { snapshots ->
                 tasks = snapshots
-                if (preferences.notifyCompleted) snapshots.filter { it.state == TaskState.Succeeded && previous[it.id] == TaskState.Running }.forEach { notify?.invoke((findTool(it.toolId)?.title ?: it.toolId) + "已完成") }
+                if (preferences.notifyCompleted) snapshots.filter { it.state == TaskState.Succeeded && previous[it.id] == TaskState.Running }.forEach { notify?.invoke((findTool(it.toolId)?.title ?: UiText.toolTitle(it.toolId)) + "已完成") }
                 previous = snapshots.associate { it.id to it.state }
             }
         }
@@ -72,8 +89,12 @@ class AppController(val dataRoot: Path, arguments: Map<String, String>) : AutoCl
     val selectedTool: UiTool? get() = tools.firstOrNull { it.id == selectedToolId }
     fun findTool(id: String): UiTool? = tools.firstOrNull { it.id == id }
     fun form(tool: UiTool): ToolFormState = forms.getOrPut(tool.id) { ToolFormState(tool).apply { if (preferences.rememberParameters) values.putAll(preferences.toolOptions[tool.id].orEmpty()) } }
-    fun navigate(destination: AppPage) { page = destination; search = ""; if (destination != AppPage.Tool) selectedToolId = null }
+    fun navigate(destination: AppPage) { workspace.capture(this); page = destination; search = ""; if (destination != AppPage.Tool) selectedToolId = null }
     fun openTool(tool: UiTool, input: List<FileRef> = emptyList()) {
+        workspace.rememberOrigin(this)
+        workspace.capture(this)
+        workspace.bind(this, tool, input)
+        updatePreferences(preferences.copy(recentTools = (listOf(tool.id) + preferences.recentTools).distinct().take(24)))
         selectedToolId = tool.id; page = AppPage.Tool; search = ""
         val field = tool.fields.firstOrNull { it.kind in setOf(FieldKind.File, FieldKind.Files) }
         if (input.isNotEmpty() && field != null) form(tool).files[field.key] = if (field.kind == FieldKind.Files || tool.batch) input else input.take(1)
@@ -102,36 +123,13 @@ class AppController(val dataRoot: Path, arguments: Map<String, String>) : AutoCl
         ImageTools(DesktopImageCodec()).readImage(files.resolve(ref.id), ToolContext(files, Capability.entries.toSet(), platform, host.registry))
     }
 
-    fun runForm(tool: UiTool, queued: Boolean = tool.queued) {
-        val state = form(tool)
-        try {
-            val firstFileField = tool.fields.firstOrNull { it.kind == FieldKind.File }
-            val batchFiles = firstFileField?.let { state.files[it.key] }.orEmpty()
-            val inputs: List<FileRef?> = if (tool.batch && batchFiles.size > 1) batchFiles else listOf(null)
-            val requests = inputs.map { input -> arguments(tool, state, firstFileField?.key, input) }
-            if (preferences.rememberParameters) {
-                val optionKeys = tool.fields.filter { it.kind in setOf(FieldKind.Choice, FieldKind.Toggle, FieldKind.Integer, FieldKind.Number) }.map { it.key }.toSet()
-                updatePreferences(preferences.copy(toolOptions = preferences.toolOptions + (tool.id to state.values.filterKeys { it in optionKeys })))
-            }
-            state.error = null
-            state.result = null
-            if (queued) {
-                requests.forEach { request ->
-                    val id = host.tasks.submit(tool.id, request, Capability.entries.toSet())
-                    taskArguments[id] = request; state.selectedTask = id
-                }
-                message = if (requests.size == 1) "已加入处理队列" else "已加入 " + requests.size + " 个任务"
-            } else {
-                state.job?.cancel()
-                state.busy = true
-                state.job = scope.launch {
-                    try { state.result = execute(tool.id, requests.first()) }
-                    catch (_: CancellationException) { state.error = null }
-                    catch (failure: Exception) { state.error = UiText.failure(failure); report(failure, tool.title) }
-                    finally { state.busy = false }
-                }
-            }
-        } catch (failure: Exception) { state.error = UiText.failure(failure); report(failure, tool.title) }
+    fun runForm(tool: UiTool, queued: Boolean = tool.queued) = runWorkspaceTool(this, tool, queued)
+    fun launchWork(action: suspend () -> Unit): Job = scope.launch { action() }
+    fun submitWork(toolId: String, arguments: JsonObject, output: OutputSession? = null): String {
+        val id = host.tasks.submit(toolId, arguments, Capability.entries.toSet(), output)
+        taskArguments[id] = arguments
+        if (output != null) taskOutputs[id] = output
+        return id
     }
 
     fun arguments(tool: UiTool, state: ToolFormState, batchKey: String? = null, batchFile: FileRef? = null): JsonObject = buildToolArguments(tool, state, batchKey, batchFile)
@@ -212,7 +210,7 @@ class AppController(val dataRoot: Path, arguments: Map<String, String>) : AutoCl
     }
     fun retry(task: TaskSnapshot) {
         val args = taskArguments[task.id] ?: run { message = "任务参数已不可用，请重新打开工具"; return }
-        try { val id = host.tasks.submit(task.toolId, args, Capability.entries.toSet()); taskArguments[id] = args }
+        try { submitWork(task.toolId, args, taskOutputs[task.id]?.fresh()) }
         catch (failure: Exception) { report(failure, "重新开始失败") }
     }
     fun removeFinishedTasks() {
@@ -222,7 +220,13 @@ class AppController(val dataRoot: Path, arguments: Map<String, String>) : AutoCl
     }
 
     fun choosePlugin(updateOf: String? = null) {
-        val path = chooseFiles(false, "选择插件安装包", "kbx").firstOrNull() ?: return
+        val picker = JFileChooser().apply {
+            dialogTitle = "选择插件安装包"
+            fileFilter = javax.swing.filechooser.FileNameExtensionFilter("KaffuBox 插件（*.kbx、*.zip）", "kbx", "zip")
+            isAcceptAllFileFilterUsed = false
+        }
+        if (picker.showOpenDialog(window) != JFileChooser.APPROVE_OPTION) return
+        val path = picker.selectedFile.toPath()
         scope.launch {
             try {
                 val preview = withContext(Dispatchers.IO) {
@@ -298,7 +302,7 @@ class AppController(val dataRoot: Path, arguments: Map<String, String>) : AutoCl
         errorDetails = ErrorDetails(title, UiText.failure(failure), details)
     }
     fun closeRequested() {
-        if (tasks.any { it.state in setOf(TaskState.Running, TaskState.Queued, TaskState.Cancelling) }) requestExit = true else onExit?.invoke()
+        if (timer.running || tasks.any { it.state in setOf(TaskState.Running, TaskState.Queued, TaskState.Cancelling) }) requestExit = true else onExit?.invoke()
     }
     fun cancelAndExit() { tasks.forEach { host.tasks.cancel(it.id) }; onExit?.invoke() }
     override fun close() { scope.cancel(); forms.values.forEach { it.job?.cancel() }; host.close() }

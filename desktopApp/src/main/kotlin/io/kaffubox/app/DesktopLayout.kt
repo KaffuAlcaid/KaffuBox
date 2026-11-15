@@ -9,8 +9,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.dp
 
 @Composable
-fun ScrollPage(content: @Composable ColumnScope.() -> Unit) {
-    val scroll = rememberScrollState()
+fun ScrollPage(scroll: ScrollState = rememberScrollState(), content: @Composable ColumnScope.() -> Unit) {
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(end = 16.dp, bottom = 28.dp), content = content)
         VerticalScrollbar(rememberScrollbarAdapter(scroll), Modifier.align(Alignment.CenterEnd).fillMaxHeight())

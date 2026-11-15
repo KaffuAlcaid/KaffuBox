@@ -11,7 +11,7 @@ enum class Workbench {
 }
 
 @Serializable
-enum class Capability { FileRead, FileWrite, Network, DeviceRead, NativeProcess }
+enum class Capability { FileRead, FileWrite, Network, DeviceRead, NativeProcess, FileManage }
 
 @Serializable
 data class ToolDescriptor(

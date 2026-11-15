@@ -237,21 +237,28 @@ fun CalculatorPage(controller: AppController) {
                 Text("多参数函数用逗号分隔，例如 root(81,4)、log(8,2)、ncr(52,5)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Panel {
+                var historyCount by remember { mutableStateOf(12) }
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text("计算记录", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                     IconButton(onClick = { state.history.clear() }, enabled = state.history.isNotEmpty()) { Icon(Icons.Outlined.DeleteOutline, "清空计算记录") }
                 }
                 if (state.history.isEmpty()) Text("计算后可在这里再次使用结果", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                state.history.take(12).forEach { record ->
+                if (state.history.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { controller.saveText(state.history.joinToString("\n") { "${it.expression} = ${it.value} [${it.angle}]" }, "Calculations.txt") }) { Text("导出计算记录") }
+                }
+                state.history.take(historyCount).forEach { record ->
                     Column(Modifier.fillMaxWidth().clickable { insert(record.value, "constant") }.padding(vertical = 9.dp)) {
                         Text(record.expression, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(formatNumber(record.value, state.displayDigits, state.displayFormat), Modifier.weight(1f), fontFamily = FontFamily.Monospace)
                             IconButton(onClick = { controller.copy(record.value) }) { Icon(Icons.Outlined.ContentCopy, "复制结果", Modifier.size(17.dp)) }
                         }
+                        TextButton(onClick = { state.expression = TextFieldValue(record.expression, TextRange(record.expression.length)); state.angleMode = record.angle; state.justEvaluated = false }) { Text("重新编辑表达式") }
                     }
                     HorizontalDivider()
                 }
+                if (state.history.size > historyCount) TextButton(onClick = { historyCount += 12 }) { Text("更多计算记录") }
+                state.preview?.let { WorkspaceResultActions(controller, jsonObject("text" to it), "science.calculate") }
             }
         }
     }

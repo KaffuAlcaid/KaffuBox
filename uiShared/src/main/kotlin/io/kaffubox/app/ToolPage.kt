@@ -15,14 +15,58 @@ import androidx.compose.ui.semantics.stateDescription
 import io.kaffubox.core.*
 import kotlin.math.roundToInt
 
+private val DedicatedToolPages = setOf("science.calculate", "science.unit", "science.matrix", "developer.encoding", "daily.countdown", "image.sampleColor", "transfer.stopShare", "transfer.scanCode", "transfer.share", "transfer.receive")
+
+@Composable
+fun FocusedToolPage(controller: AppController) {
+    val tool = controller.selectedTool
+    val hasAction = tool != null && tool.id !in DedicatedToolPages && !(tool.provider == "builtin" && workspaceOf(tool) == WorkspaceKind.Text && textInputKey(tool) != null)
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+    val compact = controller.isTouchDevice || maxWidth < 940.dp
+    Column(Modifier.fillMaxSize()) {
+        Box(Modifier.weight(1f)) { ScrollPage(scroll = navigationScrollState(controller)) { ToolPage(controller) } }
+        if (hasAction && tool != null) {
+            val state = controller.form(tool)
+            val resultMode = compact && state.values["__view"] == "result" && (state.result != null || state.taskIds.isNotEmpty() || state.busy)
+            HorizontalDivider()
+            Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(onClick = {
+                    if (resultMode) state.values["__view"] = "input"
+                    else { controller.runForm(tool); if (state.error == null && (state.busy || state.taskIds.isNotEmpty() || state.result != null)) state.values["__view"] = "result" }
+                }, enabled = resultMode || canRunTool(controller, tool, state), modifier = if (compact) Modifier.weight(1f) else Modifier.widthIn(min = 180.dp)) { Text(if (resultMode) "调整参数" else if (state.busy) "处理中" else tool.action) }
+                if (state.busy) { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp); TextButton(onClick = { state.job?.cancel() }) { Text("取消") } }
+                if (tool.queued) TextButton(onClick = { controller.navigate(AppPage.Tasks) }) { Text("查看任务") }
+            }
+        }
+    }
+    }
+}
+
+private fun canRunTool(controller: AppController, tool: UiTool, state: ToolFormState): Boolean {
+    if (state.busy || controller.findTool(tool.id) == null) return false
+    if (tool.id == "file.rename" && state.values["__renameApproved"] != renameSignature(state)) return false
+    if (tool.id == "media.extractSubtitles" && (state.probing || subtitleChoices(state.mediaInfo).none { it.supported && it.index.toString() == state.values["index"] })) return false
+    if (tool.id == "media.extractFrame") {
+        val time = state.values["start"]?.toDoubleOrNull()
+        val duration = (state.mediaInfo?.get("format") as? kotlinx.serialization.json.JsonObject)?.mediaText("duration")?.toDoubleOrNull()
+        if (state.files["file"].isNullOrEmpty() || time == null || !time.isFinite() || time < 0 || (duration != null && time > (duration - 0.05).coerceAtLeast(0.0))) return false
+    }
+    return tool.fields.filter { it.required && it.kind in setOf(FieldKind.File, FieldKind.Files) }.all { state.files[it.key].orEmpty().isNotEmpty() }
+}
+
 @Composable
 fun ToolPage(controller: AppController) {
     val tool = controller.selectedTool
-    if (tool == null) { Text("工具暂不可用，请检查插件是否已启用"); return }
-    PageHeader(tool.title, back = { controller.navigate(AppPage.Tools) }) {
-        IconButton(onClick = { controller.favorite(tool.id) }) { Icon(if (tool.id in controller.preferences.favorites) Icons.Outlined.Star else Icons.Outlined.StarBorder, "收藏") }
+    if (tool == null) {
+        PageHeader(controller.workspace.selected?.title ?: "工具", back = { controller.navigate(AppPage.Tools) })
+        if (controller.workspace.selected == WorkspaceKind.Media && controller.selectedToolId == null && !controller.isTouchDevice) {
+            InlineError("没有找到可用的媒体引擎")
+            Text("请将 ffmpeg.exe 和 ffprobe.exe 放入程序旁的 Engines 文件夹，或加入系统 PATH 后重新启动")
+            Text("FFmpeg 用于转换与编辑，FFprobe 用于媒体信息与时间范围预览")
+        } else Text("工具暂不可用，请检查插件是否已启用")
+        return
     }
-    Text(tool.summary, Modifier.padding(bottom = 20.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+    ToolHeader(controller, tool)
     when (tool.id) {
         "science.calculate" -> CalculatorPage(controller)
         "science.unit" -> UnitPage(controller)
@@ -30,7 +74,10 @@ fun ToolPage(controller: AppController) {
         "developer.encoding" -> EncodingPage(controller)
         "daily.countdown" -> CountdownPage(controller)
         "image.sampleColor" -> ColorPickerPage(controller, tool)
-        else -> GenericToolPage(controller, tool)
+        "transfer.stopShare" -> TransferManagerPage(controller)
+        "transfer.scanCode" -> TransferScanPage(controller, tool)
+        "transfer.share", "transfer.receive" -> TransferSetupPage(controller, tool)
+        else -> if (tool.provider == "builtin" && workspaceOf(tool) == WorkspaceKind.Text && textInputKey(tool) != null) TextWorkspacePage(controller, tool) else GenericToolPage(controller, tool)
     }
 }
 
@@ -38,57 +85,101 @@ fun ToolPage(controller: AppController) {
 private fun GenericToolPage(controller: AppController, tool: UiTool) {
     val state = controller.form(tool)
     val needsEngine = tool.id.startsWith("media.") || tool.id == "format.mediaConvert"
-    val unavailable = needsEngine && !controller.mediaToolsAvailable
-    if (tool.id in setOf("media.extractFrame", "media.extractSubtitles")) PrepareMediaInfo(controller, tool, state)
-    val subtitleUnavailable = tool.id == "media.extractSubtitles" && (state.probing || subtitleChoices(state.mediaInfo).none { it.supported && it.index.toString() == state.values["index"] })
-    val frameTime = state.values["start"]?.toDoubleOrNull()
-    val frameDuration = (state.mediaInfo?.get("format") as? kotlinx.serialization.json.JsonObject)?.mediaText("duration")?.toDoubleOrNull()
-    val frameUnavailable = tool.id == "media.extractFrame" && (state.files["file"].isNullOrEmpty() || frameTime == null || !frameTime.isFinite() || frameTime < 0 || (frameDuration != null && frameTime > (frameDuration - 0.05).coerceAtLeast(0.0)))
-    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    val unavailable = controller.findTool(tool.id) == null
+    if (needsEngine && controller.findTool("media.probe") != null) PrepareMediaInfo(controller, tool, state)
+    ToolWorkspaceColumns(controller, state, input = {
         if (unavailable) Panel(Modifier.fillMaxWidth()) {
             InlineError("未找到媒体引擎")
             Text("将 ffmpeg.exe 和 ffprobe.exe 放入程序旁的 Engines 文件夹，或加入系统 PATH，然后重新启动")
         }
         Panel(Modifier.fillMaxWidth()) {
-            tool.fields.forEach { field ->
-                if (!field.isVisible(state.values)) return@forEach
-                if (tool.id == "media.extractSubtitles" && field.key == "index") { SubtitleTrackField(state); return@forEach }
-                if (tool.id == "media.extractFrame" && field.key == "start") { FrameTimeField(controller, state); return@forEach }
-                when (field.kind) {
-                    FieldKind.File, FieldKind.Files -> FileField(controller, tool, field, state)
-                    FieldKind.Toggle -> ToggleRow(field.label, state.values[field.key].toBoolean(), { state.values[field.key] = it.toString() })
-                    FieldKind.Choice -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        ChoiceField(field.label, state.values[field.key].orEmpty(), field.choices, { state.values[field.key] = it })
-                        if (field.hint.isNotEmpty()) Text(field.hint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    else -> {
-                        if (field.sliderRange != null) {
-                            IntegerSliderField(field, state)
-                            return@forEach
-                        }
-                        val multiline = field.kind in setOf(FieldKind.Paragraph, FieldKind.Json, FieldKind.Lines)
-                        OutlinedTextField(state.values[field.key].orEmpty(), { state.values[field.key] = it },
-                            Modifier.fillMaxWidth().then(if (multiline) Modifier.heightIn(min = 150.dp, max = 300.dp) else Modifier),
-                            label = { Text(field.label + if (field.required) " *" else "") },
-                            supportingText = if (field.hint.isNotEmpty()) ({ Text(field.hint) }) else null,
-                            singleLine = !multiline)
-                    }
-                }
+            ToolFields(controller, tool, state)
+            if (needsEngine && state.mediaInfo != null) {
+                var showInfo by remember(tool.id) { mutableStateOf(false) }
+                TextButton(onClick = { showInfo = !showInfo }) { Text(if (showInfo) "收起媒体信息" else "查看当前输入的媒体信息") }
+                if (showInfo) MediaInfoView(state.mediaInfo!!)
             }
-            if (tool.id in setOf("image.transform", "media.edit")) ImageOptions(state, tool.id == "media.edit")
+            if (tool.fields.any { it.key == "duration" }) MediaRangeControls(controller, state)
+            if (tool.id == "file.rename") RenamePreview(controller, tool, state)
+            if (tool.id == "image.transform") Text("缩放、裁剪、水印和马赛克在一次像素处理流程内组合，保存时移除 EXIF、GPS 等原始元数据", style = MaterialTheme.typography.bodySmall)
+            OutputControls(controller, tool, state)
+            PresetControls(controller, tool, state)
             InlineError(state.error)
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(onClick = { controller.runForm(tool) }, enabled = !state.busy && !unavailable && !subtitleUnavailable && !frameUnavailable) { Text(if (state.busy) "处理中" else tool.action) }
-                if (state.busy) { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp); TextButton(onClick = { state.job?.cancel() }) { Text("取消") } }
-                if (tool.queued) TextButton(onClick = { controller.navigate(AppPage.Tasks) }) { Text("查看任务") }
-            }
-            if (tool.queued) Text(controller.outputDescription, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        state.selectedTask?.let { id -> controller.tasks.firstOrNull { it.id == id }?.let { task -> TaskCard(controller, task, showResult = true) } }
-        state.result?.let { ResultView(controller, it, tool.id) }
+        if (tool.id == "network.http") HttpRequestHistory(controller, tool, state)
+        if (tool.workbench == Workbench.Transfer) TextButton(onClick = { controller.findTool("transfer.stopShare")?.let { controller.openTool(it) } }) { Text("管理文件分享任务") }
+    }, output = {
+        BatchResults(controller, state, tool)
+    })
+}
+
+@Composable
+private fun ToolWorkspaceColumns(controller: AppController, state: ToolFormState, input: @Composable () -> Unit, output: @Composable () -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        if (!controller.isTouchDevice && maxWidth >= 940.dp) Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) { input() }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) { output() }
+        } else Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            val hasOutput = state.result != null || state.taskIds.isNotEmpty() || state.busy
+            val resultMode = hasOutput && state.values["__view"] == "result"
+            if (hasOutput) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(selected = !resultMode, onClick = { state.values["__view"] = "input" }, label = { Text("参数") })
+                FilterChip(selected = resultMode, onClick = { state.values["__view"] = "result" }, label = { Text("结果") })
+            }
+            if (resultMode) { InlineError(state.error); output() } else input()
+        }
     }
 }
 
+@Composable
+fun ToolFields(controller: AppController, tool: UiTool, state: ToolFormState, exclude: Set<String> = emptySet()) {
+    val advancedKeys = when {
+        tool.id == "image.transform" -> setOf("rotate", "targetBytes", "allowResize", "grayscale", "name")
+        tool.id == "network.http" -> setOf("headers", "timeoutMillis")
+        workspaceOf(tool) == WorkspaceKind.Media -> setOf("videoEncoder", "audioEncoder", "height", "audioBitrate", "sampleRate", "channels", "volumeDb", "normalizeAudio", "loudness", "stripMetadata", "name")
+        else -> emptySet()
+    }
+    val fields = tool.fields.filter { it.key !in exclude && it.isVisible(state.values) && !(it.key in setOf("start", "duration") && tool.fields.any { item -> item.key == "duration" }) }
+    var advanced by remember(tool.id) { mutableStateOf(false) }
+    var effects by remember(tool.id) { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        fields.filter { it.key !in advancedKeys }.forEach { RenderToolField(controller, tool, it, state) }
+        val additional = fields.filter { it.key in advancedKeys }
+        if (additional.isNotEmpty()) {
+            val configured = additional.count { state.values[it.key].orEmpty().isNotBlank() && state.values[it.key] != it.initial }
+            TextButton(onClick = { advanced = !advanced }) { Text((if (advanced) "收起高级参数" else "高级参数") + if (configured > 0) "（已调整 $configured 项）" else "") }
+            if (advanced) additional.forEach { RenderToolField(controller, tool, it, state) }
+        }
+        if (tool.id in setOf("image.transform", "media.edit")) {
+            val enabled = listOf("cropEnabled", "watermarkEnabled", "mosaicEnabled").count { state.values[it] == "true" }
+            TextButton(onClick = { effects = !effects }) { Text((if (effects) "收起局部处理" else "裁剪、水印与马赛克") + if (enabled > 0) "（已启用 $enabled 项）" else "") }
+            if (effects) ImageOptions(state, tool.id == "media.edit")
+        }
+    }
+}
+
+@Composable
+private fun RenderToolField(controller: AppController, tool: UiTool, field: ToolField, state: ToolFormState) {
+    if (tool.id == "media.extractSubtitles" && field.key == "index") { SubtitleTrackField(state); return }
+    if (tool.id == "media.extractFrame" && field.key == "start") { FrameTimeField(controller, state); return }
+    when (field.kind) {
+        FieldKind.File, FieldKind.Files -> FileField(controller, tool, field, state)
+        FieldKind.Toggle -> ToggleRow(field.label, state.values[field.key].toBoolean(), { state.values[field.key] = it.toString() })
+        FieldKind.Choice -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            ChoiceField(field.label, state.values[field.key].orEmpty(), field.choices, { state.values[field.key] = it })
+            if (field.hint.isNotEmpty()) Text(field.hint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        else -> {
+            if (field.sliderRange != null) { IntegerSliderField(field, state); return }
+            val multiline = field.kind in setOf(FieldKind.Paragraph, FieldKind.Json, FieldKind.Lines)
+            OutlinedTextField(state.values[field.key].orEmpty(), { state.values[field.key] = it },
+                Modifier.fillMaxWidth().then(if (multiline) Modifier.heightIn(min = 150.dp, max = 300.dp) else Modifier),
+                label = { Text(field.label + if (field.required) " *" else "") },
+                supportingText = if (field.hint.isNotEmpty()) ({ Text(field.hint) }) else null,
+                singleLine = !multiline)
+        }
+    }
+}
 @Composable
 private fun IntegerSliderField(field: ToolField, state: ToolFormState) {
     val range = field.sliderRange ?: return
@@ -117,7 +208,7 @@ private fun IntegerSliderField(field: ToolField, state: ToolFormState) {
 
 @Composable
 fun FileField(controller: AppController, tool: UiTool, field: ToolField, state: ToolFormState, showPreview: Boolean = true) {
-    val refs = state.files[field.key].orEmpty()
+    val refs = state.files[field.key].orEmpty().map { runCatching { controller.files.resolve(it.id).ref }.getOrDefault(it) }
     val multiple = field.kind == FieldKind.Files || tool.batch
     FileDropArea({ controller.acceptFiles(it, tool, field) }, Modifier.fillMaxWidth()) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {

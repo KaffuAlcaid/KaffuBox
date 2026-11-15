@@ -11,6 +11,7 @@ import java.io.File
 class AndroidFileBroker(private val context: Context, private val outputRoot: File) : FileBroker() {
     private val sourceUris = java.util.concurrent.ConcurrentHashMap<String, Uri>()
     init { check(outputRoot.mkdirs() || outputRoot.isDirectory) }
+    override val outputDirectory: java.nio.file.Path get() = outputRoot.toPath()
 
     fun register(uri: Uri, persist: Boolean = false): FileRef {
         if (uri.scheme != "content") throw ToolFailure("contentUriRequired")
@@ -38,7 +39,7 @@ class AndroidFileBroker(private val context: Context, private val outputRoot: Fi
         return remember(FileHandle(ref, { file.inputStream() }, localPath = file.absolutePath))
     }
 
-    fun discard(ref: FileRef) {
+    override fun discard(ref: FileRef) {
         val handle = resolve(ref.id)
         val file = File(handle.localPath ?: throw ToolFailure("outputReferenceRequired")).canonicalFile
         if (!handle.ref.writable || !file.toPath().startsWith(outputRoot.canonicalFile.toPath())) throw ToolFailure("outputReferenceRequired")

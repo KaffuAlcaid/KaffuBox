@@ -17,10 +17,11 @@ class ToolFormState(tool: UiTool) {
     var busy by mutableStateOf(false)
     var job: Job? = null
     var selectedTask by mutableStateOf<String?>(null)
+    val taskIds = mutableStateListOf<String>()
     var mediaInfo by mutableStateOf<JsonObject?>(null)
     var mediaError by mutableStateOf<String?>(null)
     var probing by mutableStateOf(false)
-    fun resetResult() { job?.cancel(); busy = false; result = null; error = null; selectedTask = null; mediaInfo = null; mediaError = null }
+    fun resetResult() { job?.cancel(); busy = false; result = null; error = null; selectedTask = null; taskIds.clear(); mediaInfo = null; mediaError = null }
 }
 
 data class ErrorDetails(val title: String, val message: String, val details: String)

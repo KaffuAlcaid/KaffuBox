@@ -5,6 +5,11 @@
 -keep class org.yaml.snakeyaml.** { *; }
 -keep class com.drew.** { *; }
 -keepattributes Signature,InnerClasses,EnclosingMethod,*Annotation*
+# 二维码解码通过 EnumMap 反射取得元数据枚举常量
+-keepclassmembers enum com.google.zxing.** {
+    public static **[] values();
+    public static ** valueOf(java.lang.String);
+}
 # 保留离屏渲染入口，以便直接验证发布依赖而不创建桌面窗口
 -keep class androidx.compose.ui.ImageComposeScene { *; }
 -keep class androidx.compose.ui.semantics.** { *; }

@@ -13,10 +13,13 @@ object FileTools {
     private val read = setOf(Capability.FileRead)
     private val write = setOf(Capability.FileRead, Capability.FileWrite)
     fun definitions(): List<ToolDefinition> = listOf(
-        defineTool("file.hash", Workbench.File, mapOf("file" to "string", "algorithm" to "string"), listOf("file"), read) { args, context ->
+        defineTool("file.hash", Workbench.File, mapOf("file" to "string", "algorithm" to "string", "expectedHash" to "string"), listOf("file"), read) { args, context ->
             val algorithm = args.string("algorithm", "SHA-256")
             requireArgument(algorithm in setOf("SHA-256", "SHA-512", "SHA-1", "MD5"), "algorithm")
-            jsonObject("hash" to digest(context, args.string("file"), algorithm), "algorithm" to algorithm)
+            val hash = digest(context, args.string("file"), algorithm)
+            val expected = args.optionalString("expectedHash")?.filterNot(Char::isWhitespace)?.takeIf(String::isNotEmpty)
+            if (expected != null) requireArgument(expected.length == hash.length && expected.all { it in '0'..'9' || it.lowercaseChar() in 'a'..'f' }, "expectedHash")
+            JsonObject(jsonObject("hash" to hash, "algorithm" to algorithm) + if (expected == null) emptyMap() else mapOf("expectedHash" to JsonPrimitive(expected), "matches" to JsonPrimitive(hash.equals(expected, true))))
         },
         defineTool("file.inspect", Workbench.File, mapOf("file" to "string"), listOf("file"), read) { args, context ->
             val handle = context.files.resolve(args.string("file"))

@@ -25,12 +25,16 @@ abstract class FileBroker {
         return handle.ref
     }
 
-    fun resolve(id: String): FileHandle {
+    open fun resolve(id: String): FileHandle {
         val handle = handles[id] ?: throw ToolFailure("fileReferenceUnknown")
         return handle.refresh?.let { handle.copy(ref = it()) } ?: handle
     }
     fun revoke(id: String) { handles.remove(id) }
+    internal fun publish(handle: FileHandle): FileRef = remember(handle)
     abstract fun createOutput(name: String, mimeType: String? = null): FileRef
+    open val outputDirectory: java.nio.file.Path? get() = null
+    open fun discard(ref: FileRef) { throw ToolFailure("outputReferenceRequired") }
+    open fun renameBatch(names: List<Pair<String, String>>): List<FileRef> { throw ToolFailure("renameUnsupported") }
 
     fun readBytes(id: String, limit: Int = 16 * 1024 * 1024): ByteArray {
         requireArgument(limit in 1..128 * 1024 * 1024, "limit")
@@ -51,9 +55,20 @@ abstract class FileBroker {
 
     fun writeBytes(name: String, bytes: ByteArray, mimeType: String? = null): FileRef {
         val ref = createOutput(safeFileName(name), mimeType)
-        resolve(ref.id).openOutput!!.invoke().use { it.write(bytes) }
+        try { resolve(ref.id).openOutput!!.invoke().use { it.write(bytes) } }
+        catch (failure: Throwable) { runCatching { discard(ref) }; throw failure }
         return ref.copy(size = bytes.size.toLong())
     }
+}
+
+fun requireWritableDirectory(directory: java.nio.file.Path) {
+    // 精简 Windows 运行时的权限预判可能误报，使用实际创建和删除验证输出目录
+    try {
+        java.nio.file.Files.createDirectories(directory)
+        val probe = java.nio.file.Files.createTempFile(directory, ".KaffuWriteProbe", ".tmp")
+        java.nio.file.Files.delete(probe)
+    } catch (_: java.io.IOException) { throw ToolFailure("outputDirectoryNotWritable") }
+    catch (_: SecurityException) { throw ToolFailure("outputDirectoryNotWritable") }
 }
 
 fun safeFileName(name: String): String {

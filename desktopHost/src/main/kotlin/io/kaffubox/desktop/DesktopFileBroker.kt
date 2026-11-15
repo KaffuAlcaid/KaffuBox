@@ -9,11 +9,11 @@ class DesktopFileBroker(outputRoot: Path) : FileBroker() {
     @Volatile var outputRoot: Path = outputRoot.toAbsolutePath().normalize()
         private set
     init { Files.createDirectories(this.outputRoot) }
+    override val outputDirectory: Path get() = outputRoot
 
     fun setOutputDirectory(directory: Path) {
         val target = directory.toAbsolutePath().normalize()
-        Files.createDirectories(target)
-        if (!Files.isDirectory(target) || !Files.isWritable(target)) throw ToolFailure("outputDirectoryNotWritable")
+        requireWritableDirectory(target)
         outputRoot = target
     }
 
@@ -38,10 +38,33 @@ class DesktopFileBroker(outputRoot: Path) : FileBroker() {
         throw ToolFailure("outputNameExhausted")
     }
 
-    fun discard(ref: FileRef) {
+    override fun discard(ref: FileRef) {
         val handle = resolve(ref.id)
         val target = Paths.get(handle.localPath ?: throw ToolFailure("localFileRequired")).toAbsolutePath().normalize()
         if (!handle.ref.writable || ownedOutputs[ref.id] != target) throw ToolFailure("outputReferenceRequired")
         Files.deleteIfExists(target); ownedOutputs.remove(ref.id); revoke(ref.id)
+    }
+
+    override fun renameBatch(names: List<Pair<String, String>>): List<FileRef> = synchronized(this) {
+        val sources = names.map { (id, name) -> val handle = resolve(id); val path = Path.of(handle.localPath ?: throw ToolFailure("localFileRequired")).toRealPath(); Triple(handle, path, path.resolveSibling(safeFileName(name))) }
+        requireArgument(sources.map { it.second }.distinct().size == sources.size, "files")
+        requireArgument(sources.map { it.third.toString().lowercase(java.util.Locale.ROOT) }.distinct().size == sources.size, "duplicateOutputNames")
+        val sourcePaths = sources.map { it.second }.toSet()
+        sources.forEach { (_, from, to) -> if (Files.exists(to) && to !in sourcePaths && !Files.isSameFile(from, to)) throw ToolFailure("outputAlreadyExists") }
+        val staged = mutableListOf<Pair<Path, Path>>()
+        val completed = mutableListOf<Pair<Path, Path>>()
+        try {
+            sources.forEach { (_, from, _) -> val temp = Files.createTempFile(from.parent, ".KaffuRename", ".tmp"); try { Files.move(from, temp, StandardCopyOption.REPLACE_EXISTING); staged += from to temp } catch (failure: Throwable) { Files.deleteIfExists(temp); throw failure } }
+            sources.forEachIndexed { index, (_, from, to) -> Files.move(staged[index].second, to); completed += from to to }
+            sources.map { (handle, _, target) ->
+                val ref = handle.ref.copy(name = target.fileName.toString(), size = Files.size(target))
+                if (ref.writable) ownedOutputs[ref.id] = target
+                remember(FileHandle(ref, { Files.newInputStream(target) }, localPath = target.toString(), refresh = { ref.copy(size = Files.size(target)) }))
+            }
+        } catch (failure: Throwable) {
+            completed.asReversed().forEach { (from, to) -> val temp = staged.single { it.first == from }.second; runCatching { Files.move(to, temp) } }
+            staged.asReversed().forEach { (from, temp) -> if (Files.exists(temp)) runCatching { Files.move(temp, from) } }
+            throw failure
+        }
     }
 }

@@ -33,11 +33,12 @@ fun TaskCard(controller: AppController, task: TaskSnapshot, showResult: Boolean 
     Panel(Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Column(Modifier.weight(1f)) {
-                Text(controller.findTool(task.toolId)?.title ?: task.toolId, style = MaterialTheme.typography.titleMedium)
+                Text(controller.findTool(task.toolId)?.title ?: UiText.toolTitle(task.toolId), style = MaterialTheme.typography.titleMedium)
                 val arguments = controller.taskArguments[task.id]
                 val ids = listOfNotNull((arguments?.get("file") as? JsonPrimitive)?.content) + ((arguments?.get("files") as? JsonArray)?.map { it.jsonPrimitive.content }.orEmpty())
                 val names = ids.mapNotNull { runCatching { controller.files.resolve(it).ref.name }.getOrNull() }
                 if (names.isNotEmpty()) Text(names.joinToString("、"), maxLines = 2, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (task.toolId == "transfer.download") arguments?.get("name")?.jsonPrimitive?.contentOrNull?.let { Text(it, maxLines = 2, style = MaterialTheme.typography.bodySmall) }
                 Text(DateTimeFormatter.ofPattern("MM-dd HH:mm:ss").withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(task.createdAt)), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
             }
             Text(UiText.state(task.state), color = if (task.state == TaskState.Failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
@@ -48,6 +49,7 @@ fun TaskCard(controller: AppController, task: TaskSnapshot, showResult: Boolean 
             val total = task.total
             if (total != null && total > 0) { LinearProgressIndicator(progress = { (task.completed.toFloat() / total).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth()); Text((task.completed * 100 / total).coerceIn(0, 100).toString() + "%", style = MaterialTheme.typography.bodySmall) }
             else LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (task.toolId == "transfer.download") Text(readableBytes(task.completed) + " / " + readableBytes(total), style = MaterialTheme.typography.bodySmall)
         }
         task.errorCode?.let { code ->
             InlineError(UiText.failure(ToolFailure(code, task.errorDetails ?: jsonObject())))

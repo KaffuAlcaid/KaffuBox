@@ -25,7 +25,7 @@ class TaskManager(
     private val observableTasks = MutableStateFlow<List<TaskSnapshot>>(emptyList())
     val snapshots: StateFlow<List<TaskSnapshot>> = observableTasks.asStateFlow()
 
-    fun submit(toolId: String, arguments: JsonObject, granted: Set<Capability>): String {
+    fun submit(toolId: String, arguments: JsonObject, granted: Set<Capability>, output: OutputSession? = null): String {
         val lease = registry.acquire(toolId)
         if (!granted.containsAll(lease.descriptor.capabilities)) {
             lease.release.close()
@@ -41,11 +41,12 @@ class TaskManager(
             try {
                 permits.withPermit {
                     update(id) { it.copy(state = TaskState.Running, startedAt = System.currentTimeMillis()) }
-                    val context = ToolContext(files, granted, platform, registry, { completed, total, phase ->
+                    val context = ToolContext(output ?: files, granted, platform, registry, { completed, total, phase ->
                         update(id) { it.copy(completed = completed.coerceAtLeast(0), total = total, phase = phase) }
                     }, owner = lease.owner)
                     val result = lease.operation.execute(arguments, context)
                     ensureActive()
+                    output?.commit()
                     update(id) { it.copy(state = TaskState.Succeeded, finishedAt = System.currentTimeMillis(), result = result) }
                 }
             } catch (cancelled: CancellationException) {
@@ -58,6 +59,7 @@ class TaskManager(
         }
         jobs[id] = job
         job.invokeOnCompletion {
+            output?.close()
             lease.release.close()
             jobs.remove(id)
             if (state.value.state in setOf(TaskState.Queued, TaskState.Cancelling)) {

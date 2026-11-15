@@ -17,7 +17,9 @@ data class AppPreferences(
     val calculatorFormat: String = "auto",
     val rememberParameters: Boolean = true,
     val toolOptions: Map<String, Map<String, String>> = emptyMap(),
-    val notifyCompleted: Boolean = false
+    val notifyCompleted: Boolean = false,
+    val presets: List<ToolPreset> = emptyList(),
+    val recentTools: List<String> = emptyList()
 )
 
 class PreferencesStore(root: Path) {

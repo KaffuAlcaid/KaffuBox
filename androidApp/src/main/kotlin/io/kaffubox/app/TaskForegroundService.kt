@@ -19,10 +19,12 @@ class TaskForegroundService : Service() {
         startForeground(1, notification(1))
         scope.launch {
             val controller = (application as KaffuApplication).controller
-            controller.host.tasks.snapshots.collectLatest { tasks ->
-                val active = tasks.count { it.state in setOf(TaskState.Queued, TaskState.Running, TaskState.Cancelling) }
+            while (isActive) {
+                val active = controller.host.tasks.list().count { it.state in setOf(TaskState.Queued, TaskState.Running, TaskState.Cancelling) } + controller.host.activeTransfers
                 if (active == 0) { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
                 else if (android.os.Build.VERSION.SDK_INT < 33 || checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED) manager.notify(1, notification(active))
+                if (active == 0) break
+                delay(1000)
             }
         }
     }

@@ -49,5 +49,6 @@ fun EncodingPage(controller: AppController) {
             OutlinedButton(onClick = { controller.copy(state.output) }, enabled = state.output.isNotEmpty()) { Text("复制结果") }
             TextButton(onClick = { controller.saveText(state.output) }, enabled = state.output.isNotEmpty()) { Text("保存为文件") }
         }
+        if (state.output.isNotEmpty()) WorkspaceResultActions(controller, jsonObject("text" to state.output), "developer.encoding")
     }
 }

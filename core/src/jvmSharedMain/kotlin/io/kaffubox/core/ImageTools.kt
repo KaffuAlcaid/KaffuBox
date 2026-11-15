@@ -29,6 +29,9 @@ class ImageTools(private val codec: ImageCodecPort) {
     suspend fun readImage(handle: FileHandle, context: ToolContext): RasterImage = mutex.withLock { load(handle, context) }
 
     fun definitions(): List<ToolDefinition> = listOf(
+        defineTool("image.clearMetadata", Workbench.Image, mapOf("file" to "string", "format" to "string", "name" to "string"), listOf("file"), write) { args, context ->
+            context.invoke("image.transform", JsonObject(args + ("format" to (args["format"] ?: kotlinx.serialization.json.JsonPrimitive("png")))))
+        },
         defineTool("image.formats", Workbench.Image) { _, _ -> jsonObject("formats" to codec.formats.sorted(), "maxPixels" to maxPixels) },
         defineTool("image.info", Workbench.Image, mapOf("file" to "string"), listOf("file"), read) { args, context ->
             val handle = context.files.resolve(args.string("file"))
@@ -114,11 +117,7 @@ class ImageTools(private val codec: ImageCodecPort) {
         defineTool("image.readCode", Workbench.Image, mapOf("file" to "string"), listOf("file"), read) { args, context ->
             mutex.withLock {
                 val image = load(context.files.resolve(args.string("file")), context)
-                val luminance = RGBLuminanceSource(image.width, image.height, image.pixels)
-                try {
-                    val result = MultiFormatReader().decode(BinaryBitmap(HybridBinarizer(luminance)), mapOf(DecodeHintType.TRY_HARDER to true, DecodeHintType.CHARACTER_SET to "UTF-8"))
-                    jsonObject("text" to result.text, "format" to result.barcodeFormat.name)
-                } catch (_: NotFoundException) { throw ToolFailure("codeNotFound") }
+                CodeReader.read(image)
             }
         }
     )

@@ -15,11 +15,12 @@ class KaffuHost(
     val registry = ToolRegistry()
     val tasks: TaskManager
     val plugins: PluginManager
-    private val sharing = TransferTools()
+    private val sharing = TransferTools(dataRoot.resolve("Temporary").resolve("Shares"))
+    val activeTransfers: Int get() = sharing.activeCount
 
     init {
         val builtins = TextTools.definitions() + DeveloperTools.definitions() + FileTools.definitions() +
-            DocumentTools.definitions() + NetworkTools.definitions() + ScienceTools.definitions() + DailyTools.definitions() + MediaMetadata.definitions() + sharing.definitions() + additionalTools
+            DocumentTools.definitions() + NetworkTools.definitions() + ScienceTools.definitions() + DailyTools.definitions() + MediaMetadata.definitions() + sharing.definitions() + TransferDownloads.definitions() + WorkspaceTools.definitions() + BatchFileTools.definitions() + StructuredTextTools.definitions() + additionalTools
         registry.install(ToolProvider("builtin", "1.0.0", builtins))
         tasks = TaskManager(registry, files, platform)
         plugins = PluginManager(dataRoot.resolve("Plugins"), platform, registry, runtime, allowUnsignedPlugins)

@@ -43,7 +43,7 @@ object ToolCatalog {
         Workbench.Developer to "开发者工具", Workbench.Network to "网络工具", Workbench.Device to "设备工具",
         Workbench.Transfer to "传输与共享", Workbench.Science to "科学计算", Workbench.Daily to "日常工具"
     )
-    private val hidden = setOf("science.calculatorCatalog", "science.unitCatalog", "image.formats", "media.engines")
+    private val hidden = setOf("science.calculatorCatalog", "science.unitCatalog", "image.formats", "media.engines", "file.renamePreview", "transfer.sessions", "transfer.extendShare", "transfer.stopAll", "transfer.clearClosed", "transfer.inspectDownload", "transfer.download")
     private fun text(key: String = "text", label: String = "输入内容", required: Boolean = true) = ToolField(key, label, FieldKind.Paragraph, required = required)
     private fun number(key: String, label: String, value: String = "", required: Boolean = false) = ToolField(key, label, FieldKind.Number, value, required = required)
     private fun integer(key: String, label: String, value: String = "", required: Boolean = false) = ToolField(key, label, FieldKind.Integer, value, required = required)
@@ -124,15 +124,16 @@ object ToolCatalog {
         UiTool("network.interfaces", "网络接口", "查看当前设备的网络接口和地址", Workbench.Network, action = "刷新"),
         UiTool("device.system", "设备信息", "查看系统、处理器数量与存储空间", Workbench.Device, action = "刷新"),
         UiTool("device.sensors", "传感器", "查看手机传感器与量程", Workbench.Device, action = "刷新"),
-        UiTool("transfer.share", "临时文件分享", "生成带有效期的本地 HTTP 下载链接", Workbench.Transfer, listOf(file(), toggle("lan", "允许同一局域网访问", true), ToolField("ttlSeconds", "有效期（分钟）", FieldKind.Integer, "10", scale = 60)), "创建分享"),
-        UiTool("transfer.stopShare", "停止文件分享", "关闭指定的临时分享链接", Workbench.Transfer, listOf(ToolField("shareId", "分享标识", required = true)), "停止分享"),
+        UiTool("transfer.share", "临时文件分享", "选择一个或多个文件，生成带有效期的局域网下载链接与二维码，多个文件打包为一份临时 ZIP", Workbench.Transfer, listOf(files(), toggle("lan", "允许同一局域网访问", true), ToolField("ttlSeconds", "有效期（分钟）", FieldKind.Integer, "10", scale = 60).copy(hint = "从打包完成、链接可用时开始计时")), "创建分享", true),
+        UiTool("transfer.stopShare", "管理文件分享任务", "查看持续运行的分享与接收会话、下载记录、有效期及文件下载任务", Workbench.Transfer),
+        UiTool("transfer.scanCode", "扫码接收文件", "扫描或导入二维码，确认地址与文件信息后下载保存", Workbench.Transfer, listOf(file("file", "二维码图片"))),
         UiTool("daily.draw", "随机抽签", "从候选列表中随机抽取", Workbench.Daily, listOf(ToolField("items", "候选项，每行一项", FieldKind.Lines, required = true), integer("count", "抽取数量", "1"), toggle("replacement", "允许重复抽取")), "抽取"),
         UiTool("daily.dice", "掷骰子", "自定义骰子数量和面数", Workbench.Daily, listOf(integer("count", "骰子数量", "1"), integer("sides", "每颗骰子的面数", "6")), "掷骰"),
         UiTool("daily.countdown", "倒计时", "设置时长并查看剩余时间", Workbench.Daily)
     )
 
     fun resolve(descriptors: List<ToolDescriptor>): List<UiTool> {
-        val known = tools.associateBy(UiTool::id)
+        val known = (tools + WorkspaceCatalog.tools).map(WorkspaceCatalog::enrich).associateBy(UiTool::id)
         return descriptors.filter { it.id !in hidden }.map { descriptor ->
             known[descriptor.id] ?: UiTool(descriptor.id, descriptor.displayName ?: descriptor.id.substringAfterLast('.'), descriptor.description ?: "由插件提供", descriptor.workbench, schemaFields(descriptor), queued = descriptor.providerId != "builtin", provider = descriptor.providerId)
         }.sortedWith(compareBy<UiTool> { it.workbench.ordinal }.thenBy { it.title })
@@ -147,7 +148,9 @@ object ToolCatalog {
             val type = schema["type"]?.jsonPrimitive?.contentOrNull
             val title = schema["title"]?.jsonPrimitive?.contentOrNull ?: key
             val options = (schema["enum"] as? JsonArray)?.map { it.jsonPrimitive.content to it.jsonPrimitive.content }.orEmpty()
-            val kind = if (options.isNotEmpty() && type == "string") FieldKind.Choice else when (type) { "boolean" -> FieldKind.Toggle; "number" -> FieldKind.Number; "integer" -> FieldKind.Integer; "object", "array" -> FieldKind.Json; else -> FieldKind.Text }
+            val fileReference = schema["format"]?.jsonPrimitive?.contentOrNull == "fileRef"
+            val fileReferences = (schema["items"] as? JsonObject)?.get("format")?.jsonPrimitive?.contentOrNull == "fileRef"
+            val kind = if (fileReference && type == "string") FieldKind.File else if (fileReferences && type == "array") FieldKind.Files else if (options.isNotEmpty() && type == "string") FieldKind.Choice else when (type) { "boolean" -> FieldKind.Toggle; "number" -> FieldKind.Number; "integer" -> FieldKind.Integer; "object", "array" -> FieldKind.Json; else -> FieldKind.Text }
             val default = schema["default"]?.let { if (it is JsonPrimitive) it.content else it.toString() } ?: options.firstOrNull()?.first.orEmpty()
             ToolField(key, title, kind, default, options, required = key in required, hint = schema["description"]?.jsonPrimitive?.contentOrNull.orEmpty())
         }
